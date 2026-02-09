@@ -243,24 +243,16 @@ async def predict_price(request: PredictionRequest):
     try:
         # Convert request to format expected by preprocessing
         input_dict = convert_request_to_input(request)
-        print(f"[DEBUG] Converted request to input_dict")
 
         # Convert dict to DataFrame (single row)
         input_df = pd.DataFrame([input_dict])
-        print(f"[DEBUG] Created input_df with shape {input_df.shape}")
 
         # Preprocess using the SAME pipeline as training
         preprocessing_metadata = artifact['preprocessing_metadata']
-        print(f"[DEBUG] Got preprocessing_metadata with {len(preprocessing_metadata)} keys")
-
         X = preprocess_for_inference(input_df, preprocessing_metadata)
-        print(f"[DEBUG] Preprocessed X with shape {X.shape}")
 
         # Make prediction with confidence interval
-        print(f"[DEBUG] Artifact keys: {list(artifact.keys())}")
         model = artifact['model']
-        print(f"[DEBUG] Got model: {type(model)}")
-
         ci_stats = artifact['ci_stats']
 
         predictions, lower_bounds, upper_bounds, confidence_flags = predict_with_confidence(
@@ -268,7 +260,6 @@ async def predict_price(request: PredictionRequest):
             X=X,
             ci_stats=ci_stats
         )
-        print(f"[DEBUG] Prediction complete: {predictions[0]}")
 
         predicted_price = float(predictions[0])
         lower_bound = float(lower_bounds[0])
