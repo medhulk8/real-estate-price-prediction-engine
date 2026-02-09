@@ -380,13 +380,13 @@ def save_model_artifact(
     """
     # Save CatBoost model separately to avoid serialization issues
     import os
-    model_dir = os.path.dirname(save_path)
+    model_dir = os.path.dirname(os.path.abspath(save_path))
     model_filename = os.path.splitext(os.path.basename(save_path))[0]
     catboost_path = os.path.join(model_dir, f"{model_filename}.cbm")
 
     # DEBUG: Print paths
     print(f"\n[DEBUG] save_path: {save_path}")
-    print(f"[DEBUG] catboost_path: {catboost_path}")
+    print(f"[DEBUG] catboost_path (absolute): {catboost_path}")
     print(f"[DEBUG] About to save CatBoost model...")
 
     # Save CatBoost model in its native format
@@ -447,6 +447,7 @@ def load_model_artifact(artifact_path: str) -> Dict[str, Any]:
         Dictionary with all artifact components
     """
     import pickle
+    import os
     from catboost import CatBoostRegressor
 
     # Load the artifact metadata with pure pickle
@@ -455,6 +456,12 @@ def load_model_artifact(artifact_path: str) -> Dict[str, Any]:
 
     # Load the CatBoost model separately
     catboost_path = artifact['model_path']
+
+    # If catboost_path is relative, make it absolute relative to the artifact file location
+    if not os.path.isabs(catboost_path):
+        artifact_dir = os.path.dirname(os.path.abspath(artifact_path))
+        catboost_path = os.path.join(artifact_dir, os.path.basename(catboost_path))
+
     model = CatBoostRegressor()
     model.load_model(catboost_path)
     artifact['model'] = model  # Add model to artifact
