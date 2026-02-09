@@ -629,3 +629,86 @@ def run_full_preprocessing_pipeline(
         'preprocessing_metadata': preprocessing_metadata,
         'categorical_indices': categorical_indices
     }
+
+    print("\n" + "=" * 80)
+    print("PREPROCESSING COMPLETE")
+    print("=" * 80)
+    print(f"Training samples: {len(X_train):,}")
+    print(f"Validation samples: {len(X_val):,}")
+    print(f"Test samples: {len(X_test):,}")
+    print(f"Features: {len(X_train.columns)}")
+    print(f"Categorical features: {len(categorical_indices)}")
+    print("=" * 80)
+
+    return {
+        'X_train': X_train,
+        'y_train': y_train,
+        'X_val': X_val,
+        'y_val': y_val,
+        'X_test': X_test,
+        'y_test': y_test,
+        'preprocessing_metadata': preprocessing_metadata,
+        'categorical_indices': categorical_indices
+    }
+
+
+def preprocess_for_inference(
+    input_data: pd.DataFrame,
+    preprocessing_metadata: Dict[str, Any]
+) -> pd.DataFrame:
+    """
+    Preprocess a single input row for inference using saved preprocessing metadata.
+    
+    This applies the SAME transformations as training but WITHOUT the target column.
+    
+    Args:
+        input_data: DataFrame with one row of input features
+        preprocessing_metadata: Saved metadata from training
+        
+    Returns:
+        DataFrame ready for model.predict()
+    """
+    df = input_data.copy()
+    
+    # Extract metadata
+    max_train_date = preprocessing_metadata['max_train_date']
+    imputation_values = preprocessing_metadata['imputation_values']
+    aggregate_maps = preprocessing_metadata['aggregate_maps']
+    feature_order = preprocessing_metadata['feature_order']
+    
+    # Set INSTANCE_DATE to max training date (current time approximation)
+    df['INSTANCE_DATE'] = pd.to_datetime(max_train_date)
+    
+    # Create time features
+    df = create_time_features(df)
+    
+    # Handle missing values
+    df = handle_missing_values(df, imputation_values)
+    
+    # Create ratio features
+    df = create_ratio_features(df)
+    
+    # Apply aggregate features (using saved maps, not computing new ones)
+    for col, agg_map in aggregate_maps.items():
+        target_col = f"{col}_median_price"
+        # Map values, use global median for unseen categories
+        global_median = preprocessing_metadata['global_median_price']
+        df[target_col] = df[col].map(agg_map).fillna(global_median)
+        
+        # Flag unseen categories
+        unseen_col = f"is_unseen_{col.lower()}"
+        df[unseen_col] = (~df[col].isin(agg_map.keys())).astype(int)
+    
+    # Ensure all required features exist and are in correct order
+    for col in feature_order:
+        if col not in df.columns:
+            # Add missing column with default value
+            if df[col].dtype == 'object':
+                df[col] = ''
+            else:
+                df[col] = 0
+    
+    # Select only the features used during training, in the same order
+    X = df[feature_order]
+    
+    return X
