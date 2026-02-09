@@ -264,7 +264,7 @@ def create_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
 
     Features:
     - area_ratio = ACTUAL_AREA / PROCEDURE_AREA
-    - rooms_density = ROOMS_EN / ACTUAL_AREA
+    - rooms_density = ROOMS_EN_numeric / ACTUAL_AREA
 
     Args:
         df: Input DataFrame
@@ -281,10 +281,28 @@ def create_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
         1.0  # Default to 1.0 if can't compute
     )
 
+    # Extract numeric part from ROOMS_EN (e.g., "2 B/R" -> 2)
+    # Handle various formats: "2 B/R", "Studio", "3", etc.
+    def extract_room_number(room_str):
+        if pd.isna(room_str) or room_str == '':
+            return 0
+        room_str = str(room_str).strip()
+        # Try to extract the first number
+        import re
+        match = re.search(r'(\d+)', room_str)
+        if match:
+            return int(match.group(1))
+        # Handle "Studio" case
+        if 'studio' in room_str.lower():
+            return 0  # or 1, depending on interpretation
+        return 0  # Default
+
+    df['ROOMS_EN_numeric'] = df['ROOMS_EN'].apply(extract_room_number)
+
     # Rooms density (safe division)
     df['rooms_density'] = np.where(
         df['ACTUAL_AREA'] > 0,
-        df['ROOMS_EN'] / df['ACTUAL_AREA'],
+        df['ROOMS_EN_numeric'] / df['ACTUAL_AREA'],
         0.0  # Default to 0.0 if can't compute
     )
 
