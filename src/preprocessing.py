@@ -682,10 +682,15 @@ def preprocess_for_inference(
     
     # Create time features
     df = create_time_features(df)
-    
-    # Handle missing values
-    df = handle_missing_values(df, imputation_values)
-    
+
+    # Apply saved imputation values (don't call handle_missing_values which returns a tuple)
+    for col, fill_value in imputation_values.items():
+        if col in df.columns:
+            df[col] = df[col].fillna(fill_value)
+            if isinstance(fill_value, str):  # Categorical column
+                df[col] = df[col].replace('', fill_value)
+                df[col] = df[col].astype(str)
+
     # Create ratio features
     df = create_ratio_features(df)
     
