@@ -378,8 +378,18 @@ def save_model_artifact(
         save_path: Path to save artifact (e.g., 'models/trained_model.pkl')
         area_unit: Unit for area measurements ('sqm' or 'sqft')
     """
+    # Save CatBoost model separately to avoid serialization issues
+    import os
+    model_dir = os.path.dirname(save_path)
+    model_filename = os.path.splitext(os.path.basename(save_path))[0]
+    catboost_path = os.path.join(model_dir, f"{model_filename}.cbm")
+
+    # Save CatBoost model in its native format
+    model.save_model(catboost_path)
+
+    # Create artifact WITHOUT the model (we'll store the path instead)
     artifact = {
-        'model': model,
+        'model_path': catboost_path,  # Path to CatBoost model file
         'preprocessing_metadata': preprocessing_metadata,
         'ci_stats': ci_stats,
         'feature_importance': feature_importance,
@@ -390,18 +400,21 @@ def save_model_artifact(
     }
 
     # Use pickle protocol 4 for Python 3.8-3.13 compatibility
-    # Protocol 5 (HIGHEST in Python 3.13) causes KeyError: 60 with joblib
-    joblib.dump(artifact, save_path, protocol=4)
+    import pickle
+    with open(save_path, 'wb') as f:
+        pickle.dump(artifact, f, protocol=4)
 
     print("\n" + "=" * 80)
     print("MODEL ARTIFACT SAVED")
     print("=" * 80)
-    print(f"Location: {save_path}")
-    import os
-    file_size_mb = os.path.getsize(save_path) / (1024**2)
-    print(f"Size: {file_size_mb:.2f} MB")
+    print(f"Metadata file: {save_path}")
+    metadata_size_mb = os.path.getsize(save_path) / (1024**2)
+    print(f"  Size: {metadata_size_mb:.2f} MB")
+    print(f"CatBoost model: {catboost_path}")
+    catboost_size_mb = os.path.getsize(catboost_path) / (1024**2)
+    print(f"  Size: {catboost_size_mb:.2f} MB")
     print(f"\nArtifact contents:")
-    print(f"  - Trained CatBoost model")
+    print(f"  - Trained CatBoost model (saved separately for compatibility)")
     print(f"  - Preprocessing metadata (dates, aggregates, feature order)")
     print(f"  - Confidence interval statistics ({len(ci_stats['buckets'])} buckets)")
     print(f"  - Feature importance (top {len(feature_importance)} features)")
@@ -420,8 +433,21 @@ def load_model_artifact(artifact_path: str) -> Dict[str, Any]:
     Returns:
         Dictionary with all artifact components
     """
-    artifact = joblib.load(artifact_path)
+    import pickle
+    from catboost import CatBoostRegressor
+
+    # Load the artifact metadata with pure pickle
+    with open(artifact_path, 'rb') as f:
+        artifact = pickle.load(f)
+
+    # Load the CatBoost model separately
+    catboost_path = artifact['model_path']
+    model = CatBoostRegressor()
+    model.load_model(catboost_path)
+    artifact['model'] = model  # Add model to artifact
+
     print(f"Model artifact loaded from: {artifact_path}")
+    print(f"CatBoost model loaded from: {catboost_path}")
     print(f"Model version: {artifact.get('model_version', 'unknown')}")
     print(f"Trained at: {artifact.get('trained_at', 'unknown')}")
     return artifact
