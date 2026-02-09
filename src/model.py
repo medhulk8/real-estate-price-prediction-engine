@@ -389,13 +389,17 @@ def save_model_artifact(
         'trained_at': pd.Timestamp.now()
     }
 
-    joblib.dump(artifact, save_path)
+    # Use pickle protocol 4 for Python 3.13 compatibility
+    import pickle
+    joblib.dump(artifact, save_path, protocol=pickle.HIGHEST_PROTOCOL)
 
     print("\n" + "=" * 80)
     print("MODEL ARTIFACT SAVED")
     print("=" * 80)
     print(f"Location: {save_path}")
-    print(f"Size: {pd.Series(joblib.load(save_path).__sizeof__()).apply(lambda x: f'{x / 1024**2:.2f} MB')}")
+    import os
+    file_size_mb = os.path.getsize(save_path) / (1024**2)
+    print(f"Size: {file_size_mb:.2f} MB")
     print(f"\nArtifact contents:")
     print(f"  - Trained CatBoost model")
     print(f"  - Preprocessing metadata (dates, aggregates, feature order)")
