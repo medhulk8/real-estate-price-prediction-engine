@@ -389,9 +389,9 @@ def save_model_artifact(
         'trained_at': pd.Timestamp.now()
     }
 
-    # Use pickle protocol 4 for Python 3.13 compatibility
-    import pickle
-    joblib.dump(artifact, save_path, protocol=pickle.HIGHEST_PROTOCOL)
+    # Use pickle protocol 4 for Python 3.8-3.13 compatibility
+    # Protocol 5 (HIGHEST in Python 3.13) causes KeyError: 60 with joblib
+    joblib.dump(artifact, save_path, protocol=4)
 
     print("\n" + "=" * 80)
     print("MODEL ARTIFACT SAVED")
