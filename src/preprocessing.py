@@ -695,15 +695,18 @@ def preprocess_for_inference(
     df = create_ratio_features(df)
     
     # Apply aggregate features (using saved maps, not computing new ones)
-    for col, agg_map in aggregate_maps.items():
+    for col, agg_df in aggregate_maps.items():
+        # Convert DataFrame to dict mapping: category -> median_price
+        agg_dict = dict(zip(agg_df[col], agg_df[f'{col}_median_price']))
+
         target_col = f"{col}_median_price"
         # Map values, use global median for unseen categories
         global_median = preprocessing_metadata['global_median_price']
-        df[target_col] = df[col].map(agg_map).fillna(global_median)
-        
+        df[target_col] = df[col].map(agg_dict).fillna(global_median)
+
         # Flag unseen categories
         unseen_col = f"is_unseen_{col.lower()}"
-        df[unseen_col] = (~df[col].isin(agg_map.keys())).astype(int)
+        df[unseen_col] = (~df[col].isin(agg_dict.keys())).astype(int)
     
     # Ensure all required features exist and are in correct order
     for col in feature_order:
