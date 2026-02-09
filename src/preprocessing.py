@@ -703,11 +703,8 @@ def preprocess_for_inference(
     # Ensure all required features exist and are in correct order
     for col in feature_order:
         if col not in df.columns:
-            # Add missing column with default value
-            if df[col].dtype == 'object':
-                df[col] = ''
-            else:
-                df[col] = 0
+            # Add missing column with default value (assume numeric)
+            df[col] = 0
     
     # Select only the features used during training, in the same order
     X = df[feature_order]
