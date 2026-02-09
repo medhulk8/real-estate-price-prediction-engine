@@ -412,6 +412,14 @@ def prepare_features_and_target(
 
     # Drop unnecessary columns
     drop_cols_final = drop_cols + [target_col]
+
+    # Also drop Period columns from EDA (year_month, year_quarter) if they exist
+    # These are pandas Period objects that CatBoost can't handle
+    period_cols = ['year_month', 'year_quarter', 'price_per_sqft_temp']
+    for col in period_cols:
+        if col in df.columns and col not in drop_cols_final:
+            drop_cols_final.append(col)
+
     X = df.drop(columns=[c for c in drop_cols_final if c in df.columns])
 
     return X, y
