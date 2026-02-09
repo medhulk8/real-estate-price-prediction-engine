@@ -241,11 +241,14 @@ async def predict_price(request: PredictionRequest):
 
     try:
         # Convert request to format expected by preprocessing
-        input_data = convert_request_to_input(request)
+        input_dict = convert_request_to_input(request)
+
+        # Convert dict to DataFrame (single row)
+        input_df = pd.DataFrame([input_dict])
 
         # Preprocess using the SAME pipeline as training
         preprocessing_metadata = artifact['preprocessing_metadata']
-        X = preprocess_for_inference(input_data, preprocessing_metadata)
+        X = preprocess_for_inference(input_df, preprocessing_metadata)
 
         # Make prediction with confidence interval
         model = artifact['model']
