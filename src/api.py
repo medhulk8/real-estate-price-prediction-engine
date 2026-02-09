@@ -172,10 +172,11 @@ async def load_model():
             artifact = None
             return
 
-        print(f"Loading model artifact from: {artifact_path}")
-        artifact = joblib.load(artifact_path)
+        # Use load_model_artifact to properly load both pickle and CatBoost files
+        from model import load_model_artifact
+        artifact = load_model_artifact(artifact_path)
 
-        print(f"✓ Model loaded successfully!")
+        print(f"\n✓ Model loaded successfully!")
         print(f"  Version: {artifact.get('model_version', 'unknown')}")
         print(f"  Trained: {artifact.get('trained_at', 'unknown')}")
         print(f"  Area unit: {artifact.get('area_unit', 'unknown')}")
