@@ -679,9 +679,9 @@ def preprocess_for_inference(
     # Set INSTANCE_DATE to max training date (current time approximation)
     # max_train_date is already a Timestamp, no need to convert
     df['INSTANCE_DATE'] = max_train_date
-    
-    # Create time features
-    df = create_time_features(df)
+
+    # Create time features (returns tuple, we only need the DataFrame)
+    df, _, _ = create_time_features(df, max_train_date=max_train_date)
 
     # Apply saved imputation values (don't call handle_missing_values which returns a tuple)
     for col, fill_value in imputation_values.items():
