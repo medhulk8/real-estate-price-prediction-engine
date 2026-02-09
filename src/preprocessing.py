@@ -677,7 +677,8 @@ def preprocess_for_inference(
     feature_order = preprocessing_metadata['feature_order']
     
     # Set INSTANCE_DATE to max training date (current time approximation)
-    df['INSTANCE_DATE'] = pd.to_datetime(max_train_date)
+    # max_train_date is already a Timestamp, no need to convert
+    df['INSTANCE_DATE'] = max_train_date
     
     # Create time features
     df = create_time_features(df)
