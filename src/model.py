@@ -384,8 +384,14 @@ def save_model_artifact(
     model_filename = os.path.splitext(os.path.basename(save_path))[0]
     catboost_path = os.path.join(model_dir, f"{model_filename}.cbm")
 
+    # DEBUG: Print paths
+    print(f"\n[DEBUG] save_path: {save_path}")
+    print(f"[DEBUG] catboost_path: {catboost_path}")
+    print(f"[DEBUG] About to save CatBoost model...")
+
     # Save CatBoost model in its native format
     model.save_model(catboost_path)
+    print(f"[DEBUG] CatBoost model saved to: {catboost_path}")
 
     # Create artifact WITHOUT the model (we'll store the path instead)
     artifact = {
@@ -400,9 +406,16 @@ def save_model_artifact(
     }
 
     # Use pickle protocol 4 for Python 3.8-3.13 compatibility
+    print(f"[DEBUG] About to pickle.dump to: {save_path}")
     import pickle
     with open(save_path, 'wb') as f:
         pickle.dump(artifact, f, protocol=4)
+    print(f"[DEBUG] Pickle dump complete!")
+
+    # Verify the pickle file
+    with open(save_path, 'rb') as f:
+        first_bytes = f.read(10)
+        print(f"[DEBUG] First bytes of {save_path}: {first_bytes.hex()}")
 
     print("\n" + "=" * 80)
     print("MODEL ARTIFACT SAVED")
