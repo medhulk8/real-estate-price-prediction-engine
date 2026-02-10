@@ -319,6 +319,71 @@ def create_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def create_price_tier_features(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame = None,
+    test_df: pd.DataFrame = None,
+    price_quantiles: Tuple[float, float] = None
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Tuple[float, float]]:
+    """
+    Create price-tier awareness features to help model learn segment-specific patterns.
+
+    Addresses systematic bias where model regresses to mean:
+    - Low-price properties: Overpredicted by 12%
+    - High-price properties: Underpredicted by 5.5%
+
+    Features added:
+    - estimated_price: AREA_EN_median_price * ACTUAL_AREA (rough price estimate)
+    - log_estimated_price: log1p(estimated_price) - continuous price magnitude
+    - price_tier: 0=low, 1=mid, 2=high (based on train quantiles)
+
+    Args:
+        train_df: Training DataFrame (must have AREA_EN_median_price, ACTUAL_AREA)
+        val_df: Validation DataFrame
+        test_df: Test DataFrame
+        price_quantiles: (p33, p66) thresholds for tiers. If None, computed from train.
+
+    Returns:
+        train_df, val_df, test_df, price_quantiles (to store in artifact)
+    """
+    # Compute estimated price for all sets
+    for df in [train_df, val_df, test_df]:
+        if df is not None:
+            df['estimated_price'] = df['AREA_EN_median_price'] * df['ACTUAL_AREA']
+            df['log_estimated_price'] = np.log1p(df['estimated_price'])
+
+    # Compute quantiles from TRAIN only
+    if price_quantiles is None:
+        p33 = train_df['estimated_price'].quantile(0.33)
+        p66 = train_df['estimated_price'].quantile(0.66)
+        price_quantiles = (p33, p66)
+        print(f"  Price tier thresholds (from train): Low ≤ ${p33:,.0f}, Mid ≤ ${p66:,.0f}, High > ${p66:,.0f}")
+    else:
+        p33, p66 = price_quantiles
+
+    # Create price_tier feature for all sets
+    def assign_tier(estimated_price):
+        if estimated_price <= p33:
+            return 0  # low
+        elif estimated_price <= p66:
+            return 1  # mid
+        else:
+            return 2  # high
+
+    for df in [train_df, val_df, test_df]:
+        if df is not None:
+            df['price_tier'] = df['estimated_price'].apply(assign_tier)
+
+    # Print distribution
+    if train_df is not None:
+        tier_counts = train_df['price_tier'].value_counts().sort_index()
+        print(f"  Train tier distribution: Low={tier_counts.get(0, 0)} ({tier_counts.get(0, 0)/len(train_df)*100:.1f}%), "
+              f"Mid={tier_counts.get(1, 0)} ({tier_counts.get(1, 0)/len(train_df)*100:.1f}%), "
+              f"High={tier_counts.get(2, 0)} ({tier_counts.get(2, 0)/len(train_df)*100:.1f}%)")
+
+    return train_df, val_df, test_df, price_quantiles
+
+
 def create_aggregate_features(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame = None,
@@ -559,7 +624,8 @@ def run_full_preprocessing_pipeline(
     6. Create time features
     7. Create ratio features
     8. Create aggregate features
-    9. Prepare final X, y matrices
+    9. Create price-tier features (estimated_price, log_estimated_price, price_tier)
+    10. Prepare final X, y matrices
 
     Args:
         df: Raw input DataFrame
@@ -611,13 +677,19 @@ def run_full_preprocessing_pipeline(
     test_df = create_ratio_features(test_df)
 
     # Step 8: Create aggregate features (train-only stats)
-    print("\n[8/9] Creating aggregate features...")
+    print("\n[8/10] Creating aggregate features...")
     train_df, val_df, test_df, aggregate_maps = create_aggregate_features(
         train_df, val_df, test_df
     )
 
-    # Step 9: Prepare final feature matrices
-    print("\n[9/9] Preparing final feature matrices...")
+    # Step 9: Create price-tier features (to reduce systematic bias)
+    print("\n[9/10] Creating price-tier features...")
+    train_df, val_df, test_df, price_quantiles = create_price_tier_features(
+        train_df, val_df, test_df
+    )
+
+    # Step 10: Prepare final feature matrices
+    print("\n[10/10] Preparing final feature matrices...")
 
     # Save actual areas BEFORE prepare_features_and_target (for price reconstruction)
     train_areas = train_df['ACTUAL_AREA'].values
@@ -638,6 +710,7 @@ def run_full_preprocessing_pipeline(
         'global_median_price': train_df['TRANS_VALUE'].median(),
         'imputation_values': imputation_values,
         'aggregate_maps': aggregate_maps,
+        'price_quantiles': price_quantiles,  # For price-tier features
         'feature_order': X_train.columns.tolist(),
         'categorical_indices': categorical_indices,
         'keep_procedures': keep_procedures
@@ -742,7 +815,24 @@ def preprocess_for_inference(
         # Flag unseen categories
         unseen_col = f"is_unseen_{col.lower()}"
         df[unseen_col] = (~df[col].isin(agg_dict.keys())).astype(int)
-    
+
+    # Create price-tier features (using saved quantiles)
+    price_quantiles = preprocessing_metadata.get('price_quantiles')
+    if price_quantiles is not None:
+        df['estimated_price'] = df['AREA_EN_median_price'] * df['ACTUAL_AREA']
+        df['log_estimated_price'] = np.log1p(df['estimated_price'])
+
+        p33, p66 = price_quantiles
+        def assign_tier(estimated_price):
+            if estimated_price <= p33:
+                return 0  # low
+            elif estimated_price <= p66:
+                return 1  # mid
+            else:
+                return 2  # high
+
+        df['price_tier'] = df['estimated_price'].apply(assign_tier)
+
     # Ensure all required features exist and are in correct order
     for col in feature_order:
         if col not in df.columns:
