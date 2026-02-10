@@ -32,15 +32,21 @@ def train_catboost_model(
     y_val: pd.Series,
     categorical_indices: List[int],
     hyperparameters: Dict[str, Any] = None,
-    random_seed: int = 42
+    random_seed: int = 42,
+    quantile_alpha: float = 0.5
 ) -> CatBoostRegressor:
     """
-    Train CatBoost regression model with MAE loss.
+    Train CatBoost regression model with Quantile loss.
+
+    Quantile regression advantages:
+    - Predicts median (50th percentile) which is robust to outliers
+    - Better performance in real space after log transformation
+    - Can train multiple models for different quantiles (confidence intervals)
 
     CatBoost advantages:
     - Handles categorical features natively (no one-hot encoding needed)
     - Built-in handling for unseen categories
-    - Robust to outliers (especially with MAE loss)
+    - Robust to outliers
     - Fast inference for production API
 
     Args:
@@ -51,27 +57,32 @@ def train_catboost_model(
         categorical_indices: List of categorical feature column indices
         hyperparameters: Custom hyperparameters (if None, use defaults)
         random_seed: Random seed for reproducibility
+        quantile_alpha: Quantile to predict (0.5 = median, 0.05/0.95 for CI)
 
     Returns:
         Trained CatBoostRegressor model
     """
-    # Default hyperparameters (light tuning)
+    # Default hyperparameters optimized for quantile regression
     if hyperparameters is None:
         hyperparameters = {
-            'iterations': 1000,
-            'learning_rate': 0.05,
-            'depth': 6,
-            'l2_leaf_reg': 3,
-            'loss_function': 'MAE',
-            'eval_metric': 'MAE',
+            'iterations': 1500,
+            'learning_rate': 0.03,
+            'depth': 7,
+            'l2_leaf_reg': 5,
+            'loss_function': f'Quantile:alpha={quantile_alpha}',
+            'eval_metric': f'Quantile:alpha={quantile_alpha}',
             'random_seed': random_seed,
             'verbose': 100,
-            'early_stopping_rounds': 50,
+            'early_stopping_rounds': 75,
             'use_best_model': True
         }
 
+    quantile_label = {0.05: "5th percentile (lower bound)",
+                      0.5: "median (50th percentile)",
+                      0.95: "95th percentile (upper bound)"}.get(quantile_alpha, f"{quantile_alpha*100:.0f}th percentile")
+
     print("=" * 80)
-    print("TRAINING CATBOOST MODEL")
+    print(f"TRAINING CATBOOST MODEL - {quantile_label}")
     print("=" * 80)
     print(f"\nHyperparameters:")
     for key, value in hyperparameters.items():
@@ -108,9 +119,88 @@ def train_catboost_model(
     print("TRAINING COMPLETE")
     print("=" * 80)
     print(f"Best iteration: {model.best_iteration_}")
-    print(f"Best validation MAE (log-space): {model.best_score_['validation']['MAE']:.4f}")
+    metric_name = f'Quantile:alpha={quantile_alpha}'
+    print(f"Best validation loss (log-space): {model.best_score_['validation'][metric_name]:.4f}")
 
     return model
+
+
+def train_quantile_models(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_val: pd.DataFrame,
+    y_val: pd.Series,
+    categorical_indices: List[int],
+    random_seed: int = 42
+) -> Dict[str, CatBoostRegressor]:
+    """
+    Train three quantile regression models for median prediction + confidence intervals.
+
+    This is the KEY improvement over residual-based confidence intervals:
+    - Quantile models predict percentiles directly in log space
+    - When converted to real space, they maintain proper ordering
+    - Much better real-space performance than MAE + residuals
+
+    Models trained:
+    - alpha=0.05: Lower bound (5th percentile)
+    - alpha=0.50: Median prediction (50th percentile) - main model
+    - alpha=0.95: Upper bound (95th percentile)
+
+    Args:
+        X_train: Training features
+        y_train: Training target (log-transformed)
+        X_val: Validation features
+        y_val: Validation target (log-transformed)
+        categorical_indices: List of categorical feature column indices
+        random_seed: Random seed for reproducibility
+
+    Returns:
+        Dictionary with three trained models: {'lower': model_0.05, 'median': model_0.50, 'upper': model_0.95}
+    """
+    print("\n" + "=" * 80)
+    print("TRAINING QUANTILE REGRESSION MODELS")
+    print("=" * 80)
+    print("\nThis trains 3 separate models for robust confidence intervals:")
+    print("  1. Lower bound (5th percentile)")
+    print("  2. Median prediction (50th percentile)")
+    print("  3. Upper bound (95th percentile)")
+    print("\nEach model optimizes for its specific quantile.")
+    print("=" * 80)
+
+    models = {}
+
+    # Train lower bound model (5th percentile)
+    print("\n[1/3] Training LOWER BOUND model...")
+    models['lower'] = train_catboost_model(
+        X_train, y_train, X_val, y_val,
+        categorical_indices=categorical_indices,
+        random_seed=random_seed,
+        quantile_alpha=0.05
+    )
+
+    # Train median model (50th percentile) - this is the main prediction
+    print("\n[2/3] Training MEDIAN model...")
+    models['median'] = train_catboost_model(
+        X_train, y_train, X_val, y_val,
+        categorical_indices=categorical_indices,
+        random_seed=random_seed,
+        quantile_alpha=0.5
+    )
+
+    # Train upper bound model (95th percentile)
+    print("\n[3/3] Training UPPER BOUND model...")
+    models['upper'] = train_catboost_model(
+        X_train, y_train, X_val, y_val,
+        categorical_indices=categorical_indices,
+        random_seed=random_seed,
+        quantile_alpha=0.95
+    )
+
+    print("\n" + "=" * 80)
+    print("ALL QUANTILE MODELS TRAINED SUCCESSFULLY")
+    print("=" * 80)
+
+    return models
 
 
 def compute_metrics(
@@ -175,7 +265,7 @@ def compute_metrics(
 
 
 def evaluate_model(
-    model: CatBoostRegressor,
+    models: Dict[str, CatBoostRegressor],
     X_train: pd.DataFrame,
     y_train: np.ndarray,
     X_val: pd.DataFrame,
@@ -184,13 +274,14 @@ def evaluate_model(
     y_test: np.ndarray
 ) -> Dict[str, Dict[str, float]]:
     """
-    Evaluate model on train, validation, and test sets.
+    Evaluate quantile regression models on train, validation, and test sets.
 
+    Uses the median (50th percentile) model for evaluation metrics.
     Predictions are made in log-space, then inverse-transformed to original space
     for metric computation.
 
     Args:
-        model: Trained CatBoost model
+        models: Dictionary with 'lower', 'median', 'upper' quantile models
         X_train, y_train: Training data (y in log-space)
         X_val, y_val: Validation data (y in log-space)
         X_test, y_test: Test data (y in log-space)
@@ -199,25 +290,27 @@ def evaluate_model(
         Dictionary with metrics for each dataset
     """
     print("\n" + "=" * 80)
-    print("EVALUATING MODEL")
+    print("EVALUATING MODEL (using median quantile)")
     print("=" * 80)
 
+    # Use the median model for evaluation
+    median_model = models['median']
     results = {}
 
     # Train set
-    y_train_pred_log = model.predict(X_train)
+    y_train_pred_log = median_model.predict(X_train)
     y_train_true = np.expm1(y_train)  # Inverse log1p transform
     y_train_pred = np.expm1(y_train_pred_log)
     results['train'] = compute_metrics(y_train_true, y_train_pred, "Train")
 
     # Validation set
-    y_val_pred_log = model.predict(X_val)
+    y_val_pred_log = median_model.predict(X_val)
     y_val_true = np.expm1(y_val)
     y_val_pred = np.expm1(y_val_pred_log)
     results['val'] = compute_metrics(y_val_true, y_val_pred, "Validation")
 
     # Test set
-    y_test_pred_log = model.predict(X_test)
+    y_test_pred_log = median_model.predict(X_test)
     y_test_true = np.expm1(y_test)
     y_test_pred = np.expm1(y_test_pred_log)
     results['test'] = compute_metrics(y_test_true, y_test_pred, "Test")
@@ -350,52 +443,50 @@ def get_feature_importance(
 
 
 def save_model_artifact(
-    model: CatBoostRegressor,
+    models: Dict[str, CatBoostRegressor],
     preprocessing_metadata: Dict[str, Any],
-    ci_stats: Dict[str, Any],
     feature_importance: pd.DataFrame,
     metrics: Dict[str, Dict[str, float]],
     save_path: str,
     area_unit: str = "sqm"
 ) -> None:
     """
-    Save complete model artifact for production deployment.
+    Save complete model artifact with all three quantile models.
 
     The artifact contains EVERYTHING needed for inference:
-    - Trained CatBoost model
+    - Three quantile regression models (lower, median, upper bounds)
     - Preprocessing metadata (dates, medians, aggregates, feature order)
-    - Confidence interval statistics
-    - Feature importance (optional, for API key_factors)
+    - Feature importance (for API key_factors)
     - Performance metrics (for monitoring)
     - Area unit (sqm or sqft)
 
     Args:
-        model: Trained CatBoost model
+        models: Dictionary with 'lower', 'median', 'upper' quantile models
         preprocessing_metadata: From preprocessing pipeline
-        ci_stats: Confidence interval statistics
         feature_importance: Feature importance DataFrame
         metrics: Model performance metrics
         save_path: Path to save artifact (e.g., 'models/trained_model.pkl')
         area_unit: Unit for area measurements ('sqm' or 'sqft')
     """
-    # Save CatBoost model separately to avoid serialization issues
     import os
     model_dir = os.path.dirname(os.path.abspath(save_path))
     model_filename = os.path.splitext(os.path.basename(save_path))[0]
-    catboost_path = os.path.join(model_dir, f"{model_filename}.cbm")
 
-    # Save CatBoost model in its native format
-    model.save_model(catboost_path)
+    # Save all three quantile models separately
+    model_paths = {}
+    for quantile_name in ['lower', 'median', 'upper']:
+        model_path = os.path.join(model_dir, f"{model_filename}_{quantile_name}.cbm")
+        models[quantile_name].save_model(model_path)
+        model_paths[quantile_name] = model_path
 
-    # Create artifact WITHOUT the model (we'll store the path instead)
+    # Create artifact WITHOUT the models (we'll store the paths instead)
     artifact = {
-        'model_path': catboost_path,  # Path to CatBoost model file
+        'model_paths': model_paths,  # Paths to three CatBoost model files
         'preprocessing_metadata': preprocessing_metadata,
-        'ci_stats': ci_stats,
         'feature_importance': feature_importance,
         'metrics': metrics,
         'area_unit': area_unit,
-        'model_version': '1.0',
+        'model_version': '2.0',  # v2.0 with quantile regression
         'trained_at': pd.Timestamp.now()
     }
 
@@ -410,13 +501,18 @@ def save_model_artifact(
     print(f"Metadata file: {save_path}")
     metadata_size_mb = os.path.getsize(save_path) / (1024**2)
     print(f"  Size: {metadata_size_mb:.2f} MB")
-    print(f"CatBoost model: {catboost_path}")
-    catboost_size_mb = os.path.getsize(catboost_path) / (1024**2)
-    print(f"  Size: {catboost_size_mb:.2f} MB")
+
+    total_model_size = 0
+    for quantile_name, model_path in model_paths.items():
+        model_size_mb = os.path.getsize(model_path) / (1024**2)
+        total_model_size += model_size_mb
+        print(f"Model ({quantile_name}): {os.path.basename(model_path)}")
+        print(f"  Size: {model_size_mb:.2f} MB")
+
     print(f"\nArtifact contents:")
-    print(f"  - Trained CatBoost model (saved separately for compatibility)")
+    print(f"  - Three quantile regression models (5th, 50th, 95th percentiles)")
+    print(f"  - Total model size: {total_model_size:.2f} MB")
     print(f"  - Preprocessing metadata (dates, aggregates, feature order)")
-    print(f"  - Confidence interval statistics ({len(ci_stats['buckets'])} buckets)")
     print(f"  - Feature importance (top {len(feature_importance)} features)")
     print(f"  - Performance metrics (train/val/test)")
     print(f"  - Area unit: {area_unit}")
@@ -425,13 +521,16 @@ def save_model_artifact(
 
 def load_model_artifact(artifact_path: str) -> Dict[str, Any]:
     """
-    Load saved model artifact.
+    Load saved model artifact with all quantile models.
+
+    Handles both v1.0 (single model) and v2.0 (three quantile models) artifacts
+    for backward compatibility.
 
     Args:
         artifact_path: Path to saved artifact
 
     Returns:
-        Dictionary with all artifact components
+        Dictionary with all artifact components including loaded models
     """
     import pickle
     import os
@@ -441,93 +540,95 @@ def load_model_artifact(artifact_path: str) -> Dict[str, Any]:
     with open(artifact_path, 'rb') as f:
         artifact = pickle.load(f)
 
-    # Load the CatBoost model separately
-    catboost_path = artifact['model_path']
-
-    # If catboost_path is relative, make it absolute relative to the artifact file location
-    if not os.path.isabs(catboost_path):
-        artifact_dir = os.path.dirname(os.path.abspath(artifact_path))
-        catboost_path = os.path.join(artifact_dir, os.path.basename(catboost_path))
-
-    model = CatBoostRegressor()
-    model.load_model(catboost_path)
-    artifact['model'] = model  # Add model to artifact
+    artifact_dir = os.path.dirname(os.path.abspath(artifact_path))
+    version = artifact.get('model_version', '1.0')
 
     print(f"Model artifact loaded from: {artifact_path}")
-    print(f"CatBoost model loaded from: {catboost_path}")
-    print(f"Model version: {artifact.get('model_version', 'unknown')}")
+    print(f"Model version: {version}")
+
+    # Handle v2.0 (quantile regression models)
+    if version == '2.0' and 'model_paths' in artifact:
+        models = {}
+        for quantile_name, model_path in artifact['model_paths'].items():
+            # Make path absolute if relative
+            if not os.path.isabs(model_path):
+                model_path = os.path.join(artifact_dir, os.path.basename(model_path))
+
+            model = CatBoostRegressor()
+            model.load_model(model_path)
+            models[quantile_name] = model
+            print(f"  - Loaded {quantile_name} quantile model from: {os.path.basename(model_path)}")
+
+        artifact['models'] = models
+
+    # Handle v1.0 (single model) - backward compatibility
+    elif 'model_path' in artifact:
+        catboost_path = artifact['model_path']
+        if not os.path.isabs(catboost_path):
+            catboost_path = os.path.join(artifact_dir, os.path.basename(catboost_path))
+
+        model = CatBoostRegressor()
+        model.load_model(catboost_path)
+        artifact['model'] = model  # Keep old 'model' key for compatibility
+        print(f"  - Loaded single model from: {os.path.basename(catboost_path)}")
+        print("  WARNING: This is a v1.0 model. Retrain with quantile regression for better performance.")
+
     print(f"Trained at: {artifact.get('trained_at', 'unknown')}")
     return artifact
 
 
 def predict_with_confidence(
-    model: CatBoostRegressor,
-    X: pd.DataFrame,
-    ci_stats: Dict[str, Any],
-    extrapolation_multiplier: float = 1.5
+    models: Dict[str, CatBoostRegressor],
+    X: pd.DataFrame
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Make predictions with confidence intervals.
+    Make predictions with confidence intervals using quantile regression models.
 
-    Process:
-    1. Predict in log-space, transform to original space
-    2. For each prediction, find appropriate CI bucket based on predicted value
-    3. Apply bucket's error quantiles to get confidence interval
-    4. If prediction is outside training range (extrapolation), widen interval
+    This is the NEW approach using three separate quantile models:
+    - models['lower']: Predicts 5th percentile
+    - models['median']: Predicts 50th percentile (median) - main prediction
+    - models['upper']: Predicts 95th percentile
+
+    This approach is MUCH better than residual-based CIs because:
+    1. Quantiles are predicted directly in log space
+    2. When transformed to real space with expm1(), ordering is preserved
+    3. Much better real-space performance
+    4. No need for bucketing or extrapolation handling
 
     Args:
-        model: Trained CatBoost model
+        models: Dictionary with 'lower', 'median', 'upper' quantile models
         X: Features for prediction
-        ci_stats: Confidence interval statistics from validation
-        extrapolation_multiplier: How much to widen CI for extrapolation (default 1.5x)
 
     Returns:
         predictions, lower_bounds, upper_bounds, confidence_flags
     """
-    # Predict in log-space and transform
-    y_pred_log = model.predict(X)
-    y_pred = np.expm1(y_pred_log)
+    # Predict with all three models in log-space
+    y_pred_log_lower = models['lower'].predict(X)
+    y_pred_log_median = models['median'].predict(X)
+    y_pred_log_upper = models['upper'].predict(X)
 
-    # Initialize arrays
-    lower_bounds = np.zeros(len(y_pred))
-    upper_bounds = np.zeros(len(y_pred))
-    confidence_flags = np.array(['medium'] * len(y_pred), dtype=object)
+    # Transform to real space
+    lower_bounds = np.expm1(y_pred_log_lower)
+    predictions = np.expm1(y_pred_log_median)
+    upper_bounds = np.expm1(y_pred_log_upper)
 
-    # Get overall prediction range from CI stats
-    all_edges = ci_stats['bucket_edges']
-    min_pred = min([edge[0] for edge in all_edges])
-    max_pred = max([edge[1] for edge in all_edges])
+    # Compute confidence interval width as percentage of prediction
+    ci_width_pct = ((upper_bounds - lower_bounds) / predictions) * 100
 
-    # For each prediction, find appropriate bucket and apply CI
-    for i, pred in enumerate(y_pred):
-        # Check for extrapolation
-        is_extrapolation = (pred < min_pred) or (pred > max_pred)
+    # Assign confidence flags based on CI width
+    # Narrow CI = high confidence, Wide CI = low confidence
+    confidence_flags = np.array(['medium'] * len(predictions), dtype=object)
+    confidence_flags[ci_width_pct < 50] = 'high'  # CI < 50% of prediction
+    confidence_flags[ci_width_pct > 100] = 'low'  # CI > 100% of prediction
 
-        # Find appropriate bucket
-        bucket_idx = 0
-        for j, (bucket_min, bucket_max) in enumerate(all_edges):
-            if bucket_min <= pred <= bucket_max:
-                bucket_idx = j
-                break
+    # Ensure lower < prediction < upper (quantile crossing can happen rarely)
+    lower_bounds = np.minimum(lower_bounds, predictions)
+    upper_bounds = np.maximum(upper_bounds, predictions)
 
-        # Get error quantiles from bucket
-        bucket = ci_stats['buckets'][bucket_idx]
-        lower_error = bucket['lower_error']
-        upper_error = bucket['upper_error']
+    # Ensure non-negative prices
+    lower_bounds = np.maximum(0, lower_bounds)
 
-        # Apply extrapolation multiplier if needed
-        if is_extrapolation:
-            lower_error *= extrapolation_multiplier
-            upper_error *= extrapolation_multiplier
-            confidence_flags[i] = 'low'
-        else:
-            confidence_flags[i] = 'high'
-
-        # Compute confidence bounds
-        lower_bounds[i] = max(0, pred - lower_error)  # Can't be negative
-        upper_bounds[i] = pred + upper_error
-
-    return y_pred, lower_bounds, upper_bounds, confidence_flags
+    return predictions, lower_bounds, upper_bounds, confidence_flags
 
 
 # ==================== SEGMENTED EVALUATION UTILITIES ====================

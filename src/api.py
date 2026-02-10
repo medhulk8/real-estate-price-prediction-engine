@@ -251,15 +251,26 @@ async def predict_price(request: PredictionRequest):
         preprocessing_metadata = artifact['preprocessing_metadata']
         X = preprocess_for_inference(input_df, preprocessing_metadata)
 
-        # Make prediction with confidence interval
-        model = artifact['model']
-        ci_stats = artifact['ci_stats']
-
-        predictions, lower_bounds, upper_bounds, confidence_flags = predict_with_confidence(
-            model=model,
-            X=X,
-            ci_stats=ci_stats
-        )
+        # Make prediction with confidence interval using quantile models
+        # Handle both v1.0 (single model) and v2.0 (quantile models)
+        if 'models' in artifact:
+            # v2.0: Use quantile regression models
+            models = artifact['models']
+            predictions, lower_bounds, upper_bounds, confidence_flags = predict_with_confidence(
+                models=models,
+                X=X
+            )
+        else:
+            # v1.0 backward compatibility: Use single model + CI stats
+            model = artifact['model']
+            ci_stats = artifact.get('ci_stats', {})
+            # Use old prediction method (this will give poor results)
+            y_pred_log = model.predict(X)
+            predictions = np.expm1(y_pred_log)
+            # Fallback: use simple ±20% confidence interval
+            lower_bounds = predictions * 0.8
+            upper_bounds = predictions * 1.2
+            confidence_flags = np.array(['medium'] * len(predictions), dtype=object)
 
         predicted_price = float(predictions[0])
         lower_bound = float(lower_bounds[0])
@@ -274,10 +285,12 @@ async def predict_price(request: PredictionRequest):
             price_per_sqft = None
 
         # Generate key factors explaining the prediction
+        # Use median model for SHAP values
+        explanation_model = artifact.get('models', {}).get('median', artifact.get('model'))
         key_factors = generate_key_factors(
             request=request,
             X=X,
-            model=model,
+            model=explanation_model,
             feature_importance=artifact.get('feature_importance'),
             predicted_price=predicted_price
         )
