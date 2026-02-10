@@ -70,7 +70,8 @@ def remove_data_errors(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
     1. ACTUAL_AREA <= 0 (impossible)
     2. PROCEDURE_AREA <= 0 (impossible)
     3. TRANS_VALUE <= 0 (impossible for sale prices)
-    4. Extreme outliers based on price-per-area ratios (will be defined based on EDA)
+    4. ACTUAL_AREA > 5000 sqm (likely data errors or non-residential properties)
+    5. Extreme outliers based on price-per-area ratios (will be defined based on EDA)
 
     Args:
         df: Input DataFrame
@@ -88,7 +89,16 @@ def remove_data_errors(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
     # Rule 3: Remove invalid transaction values
     df = df[df['TRANS_VALUE'] > 0]
 
-    # Rule 4: Remove extreme price-per-area outliers (very conservative)
+    # Rule 4: Remove unrealistically large areas (> 5000 sqm ~ 54,000 sqft)
+    # These are likely data errors or very unusual properties (land parcels, commercial)
+    # that would skew the price_per_sqm model
+    max_area = 5000  # sqm
+    area_outliers = len(df[df['ACTUAL_AREA'] > max_area])
+    if area_outliers > 0 and verbose:
+        print(f"  Removing {area_outliers} properties with ACTUAL_AREA > {max_area} sqm")
+    df = df[df['ACTUAL_AREA'] <= max_area]
+
+    # Rule 5: Remove extreme price-per-area outliers (very conservative)
     # We'll use 0.1th and 99.9th percentiles as thresholds
     df['_temp_price_per_sqft'] = df['TRANS_VALUE'] / df['ACTUAL_AREA']
     p001 = df['_temp_price_per_sqft'].quantile(0.001)
@@ -411,13 +421,8 @@ def prepare_features_and_target(
 
     df = df.copy()
 
-    # Filter out rows with invalid area (required for price_per_sqm)
-    if use_price_per_sqm:
-        initial_len = len(df)
-        df = df[df['ACTUAL_AREA'] > 0].copy()
-        removed = initial_len - len(df)
-        if removed > 0:
-            print(f"  Removed {removed} rows with ACTUAL_AREA <= 0 ({removed/initial_len*100:.2f}%)")
+    # Note: ACTUAL_AREA > 0 filtering is done in remove_data_errors()
+    # No need to filter again here to avoid misalignment with saved areas
 
     # Extract target
     if use_price_per_sqm:
