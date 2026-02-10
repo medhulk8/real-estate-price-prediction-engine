@@ -332,47 +332,47 @@ def create_price_tier_features(
     - Low-price properties: Overpredicted by 12%
     - High-price properties: Underpredicted by 5.5%
 
+    CRITICAL: Uses ONLY inference-available features (AREA_EN_median_price) to avoid:
+    - Data leakage from using TRANS_VALUE (the target!)
+    - Train/inference mismatch
+
     Features added:
-    - estimated_price: AREA_EN_median_price * ACTUAL_AREA (rough price estimate)
-    - log_estimated_price: log1p(estimated_price) - continuous price magnitude
-    - price_tier: 0=low, 1=mid, 2=high (based on train quantiles)
+    - price_tier: 0=low, 1=mid, 2=high (based on AREA_EN_median_price quantiles)
+    - log_area_price: log1p(AREA_EN_median_price) - continuous price signal
 
     Args:
-        train_df: Training DataFrame (must have AREA_EN_median_price, ACTUAL_AREA)
+        train_df: Training DataFrame (must have AREA_EN_median_price)
         val_df: Validation DataFrame
         test_df: Test DataFrame
-        price_quantiles: (p33, p66) thresholds for tiers. If None, computed from train.
+        price_quantiles: (p33, p66) thresholds for tiers. If None, computed from train AREA_EN_median_price.
 
     Returns:
         train_df, val_df, test_df, price_quantiles (to store in artifact)
     """
-    # Compute estimated price for all sets
-    for df in [train_df, val_df, test_df]:
-        if df is not None:
-            df['estimated_price'] = df['AREA_EN_median_price'] * df['ACTUAL_AREA']
-            df['log_estimated_price'] = np.log1p(df['estimated_price'])
-
-    # Compute quantiles from TRAIN only
+    # Compute quantiles from TRAIN AREA_EN_median_price (inference-available proxy)
+    # NOT from TRANS_VALUE (that would be leakage!)
     if price_quantiles is None:
-        p33 = train_df['estimated_price'].quantile(0.33)
-        p66 = train_df['estimated_price'].quantile(0.66)
+        p33 = train_df['AREA_EN_median_price'].quantile(0.33)
+        p66 = train_df['AREA_EN_median_price'].quantile(0.66)
         price_quantiles = (p33, p66)
-        print(f"  Price tier thresholds (from train): Low ≤ ${p33:,.0f}, Mid ≤ ${p66:,.0f}, High > ${p66:,.0f}")
+        print(f"  Price tier thresholds (area median): Low ≤ ${p33:,.0f}, Mid ≤ ${p66:,.0f}, High > ${p66:,.0f}")
     else:
         p33, p66 = price_quantiles
 
-    # Create price_tier feature for all sets
-    def assign_tier(estimated_price):
-        if estimated_price <= p33:
+    # Helper to assign tier based on area median price
+    def assign_tier(area_median_price):
+        if area_median_price <= p33:
             return 0  # low
-        elif estimated_price <= p66:
+        elif area_median_price <= p66:
             return 1  # mid
         else:
             return 2  # high
 
+    # Use SAME feature (AREA_EN_median_price) for train/val/test to avoid mismatch
     for df in [train_df, val_df, test_df]:
         if df is not None:
-            df['price_tier'] = df['estimated_price'].apply(assign_tier)
+            df['price_tier'] = df['AREA_EN_median_price'].apply(assign_tier)
+            df['log_area_price'] = np.log1p(df['AREA_EN_median_price'])
 
     # Print distribution
     if train_df is not None:
@@ -819,19 +819,19 @@ def preprocess_for_inference(
     # Create price-tier features (using saved quantiles)
     price_quantiles = preprocessing_metadata.get('price_quantiles')
     if price_quantiles is not None:
-        df['estimated_price'] = df['AREA_EN_median_price'] * df['ACTUAL_AREA']
-        df['log_estimated_price'] = np.log1p(df['estimated_price'])
-
         p33, p66 = price_quantiles
-        def assign_tier(estimated_price):
-            if estimated_price <= p33:
+
+        def assign_tier(price):
+            if price <= p33:
                 return 0  # low
-            elif estimated_price <= p66:
+            elif price <= p66:
                 return 1  # mid
             else:
                 return 2  # high
 
-        df['price_tier'] = df['estimated_price'].apply(assign_tier)
+        # Use AREA_EN_median_price as proxy for tier assignment (same as training)
+        df['price_tier'] = df['AREA_EN_median_price'].apply(assign_tier)
+        df['log_area_price'] = np.log1p(df['AREA_EN_median_price'])
 
     # Ensure all required features exist and are in correct order
     for col in feature_order:

@@ -44,11 +44,14 @@ models/*.joblib
 models/*.h5
 models/*.pt
 
-# Data files (may be large or sensitive)
-# Note: For challenge submission, transactions CSV is kept in repo
+# Data files
+# Keep transactions CSV for reproducibility (13 MB is under GitHub's 100 MB limit)
 # *.csv
 data/
 datasets/
+
+# Archive directory (temporary files from development)
+archive/
 
 # macOS
 .DS_Store

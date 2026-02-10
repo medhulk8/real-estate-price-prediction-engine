@@ -100,7 +100,7 @@ class PredictionResponse(BaseModel):
     """
     predicted_price: float = Field(..., description="Predicted transaction price")
     confidence_interval: ConfidenceInterval = Field(..., description="90% confidence interval")
-    price_per_sqft: Optional[float] = Field(None, description="Price per square foot/meter")
+    price_per_unit_area: Optional[float] = Field(None, description="Price per unit area (depends on input area unit)")
     model_confidence: str = Field(..., description="Confidence level: 'high', 'medium', or 'low'")
     key_factors: List[str] = Field(..., description="Top 3 factors driving this prediction")
 
@@ -115,7 +115,7 @@ class PredictionResponse(BaseModel):
                     "lower": 1750000,
                     "upper": 1950000
                 },
-                "price_per_sqft": 1541,
+                "price_per_unit_area": 1541,
                 "model_confidence": "high",
                 "key_factors": [
                     "Location: Premium area",
@@ -281,12 +281,12 @@ async def predict_price(request: PredictionRequest):
         upper_bound = float(upper_bounds[0])
         confidence_flag = str(confidence_flags[0])
 
-        # Compute price per sqft
+        # Compute price per unit area (sqm or sqft depending on input)
         area_unit = artifact.get('area_unit', 'sqm')
         if request.actual_area > 0:
-            price_per_sqft = predicted_price / request.actual_area
+            price_per_unit_area = predicted_price / request.actual_area
         else:
-            price_per_sqft = None
+            price_per_unit_area = None
 
         # Generate key factors explaining the prediction
         # Use median model for SHAP values
@@ -306,7 +306,7 @@ async def predict_price(request: PredictionRequest):
                 lower=lower_bound,
                 upper=upper_bound
             ),
-            price_per_sqft=price_per_sqft,
+            price_per_unit_area=price_per_unit_area,
             model_confidence=confidence_flag,
             key_factors=key_factors,
             area_unit=area_unit
