@@ -271,26 +271,37 @@ def evaluate_model(
     X_val: pd.DataFrame,
     y_val: np.ndarray,
     X_test: pd.DataFrame,
-    y_test: np.ndarray
+    y_test: np.ndarray,
+    train_areas: np.ndarray = None,
+    val_areas: np.ndarray = None,
+    test_areas: np.ndarray = None,
+    use_price_per_sqm: bool = True
 ) -> Dict[str, Dict[str, float]]:
     """
     Evaluate quantile regression models on train, validation, and test sets.
 
     Uses the median (50th percentile) model for evaluation metrics.
-    Predictions are made in log-space, then inverse-transformed to original space
-    for metric computation.
+
+    KEY FEATURE: Supports price_per_sqm target with price reconstruction.
+    - If use_price_per_sqm=True: Model predicts price_per_sqm, we reconstruct total price
+    - If use_price_per_sqm=False: Model predicts total price directly (old approach)
 
     Args:
         models: Dictionary with 'lower', 'median', 'upper' quantile models
-        X_train, y_train: Training data (y in log-space)
+        X_train, y_train: Training data (y in log-space, either price or price_per_sqm)
         X_val, y_val: Validation data (y in log-space)
         X_test, y_test: Test data (y in log-space)
+        train_areas, val_areas, test_areas: ACTUAL_AREA for price reconstruction
+        use_price_per_sqm: If True, reconstruct price from price_per_sqm
 
     Returns:
         Dictionary with metrics for each dataset
     """
     print("\n" + "=" * 80)
-    print("EVALUATING MODEL (using median quantile)")
+    if use_price_per_sqm:
+        print("EVALUATING MODEL (price_per_sqm target with reconstruction)")
+    else:
+        print("EVALUATING MODEL (absolute price target)")
     print("=" * 80)
 
     # Use the median model for evaluation
@@ -299,20 +310,40 @@ def evaluate_model(
 
     # Train set
     y_train_pred_log = median_model.predict(X_train)
-    y_train_true = np.expm1(y_train)  # Inverse log1p transform
-    y_train_pred = np.expm1(y_train_pred_log)
+    if use_price_per_sqm and train_areas is not None:
+        # Reconstruct price = price_per_sqm × area
+        y_train_true_ppsm = np.expm1(y_train)
+        y_train_pred_ppsm = np.expm1(y_train_pred_log)
+        y_train_true = y_train_true_ppsm * train_areas
+        y_train_pred = y_train_pred_ppsm * train_areas
+    else:
+        # Direct price prediction
+        y_train_true = np.expm1(y_train)
+        y_train_pred = np.expm1(y_train_pred_log)
     results['train'] = compute_metrics(y_train_true, y_train_pred, "Train")
 
     # Validation set
     y_val_pred_log = median_model.predict(X_val)
-    y_val_true = np.expm1(y_val)
-    y_val_pred = np.expm1(y_val_pred_log)
+    if use_price_per_sqm and val_areas is not None:
+        y_val_true_ppsm = np.expm1(y_val)
+        y_val_pred_ppsm = np.expm1(y_val_pred_log)
+        y_val_true = y_val_true_ppsm * val_areas
+        y_val_pred = y_val_pred_ppsm * val_areas
+    else:
+        y_val_true = np.expm1(y_val)
+        y_val_pred = np.expm1(y_val_pred_log)
     results['val'] = compute_metrics(y_val_true, y_val_pred, "Validation")
 
     # Test set
     y_test_pred_log = median_model.predict(X_test)
-    y_test_true = np.expm1(y_test)
-    y_test_pred = np.expm1(y_test_pred_log)
+    if use_price_per_sqm and test_areas is not None:
+        y_test_true_ppsm = np.expm1(y_test)
+        y_test_pred_ppsm = np.expm1(y_test_pred_log)
+        y_test_true = y_test_true_ppsm * test_areas
+        y_test_pred = y_test_pred_ppsm * test_areas
+    else:
+        y_test_true = np.expm1(y_test)
+        y_test_pred = np.expm1(y_test_pred_log)
     results['test'] = compute_metrics(y_test_true, y_test_pred, "Test")
 
     return results
@@ -579,38 +610,50 @@ def load_model_artifact(artifact_path: str) -> Dict[str, Any]:
 
 def predict_with_confidence(
     models: Dict[str, CatBoostRegressor],
-    X: pd.DataFrame
+    X: pd.DataFrame,
+    actual_areas: np.ndarray = None,
+    use_price_per_sqm: bool = True
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Make predictions with confidence intervals using quantile regression models.
 
-    This is the NEW approach using three separate quantile models:
+    This uses three separate quantile models:
     - models['lower']: Predicts 5th percentile
     - models['median']: Predicts 50th percentile (median) - main prediction
     - models['upper']: Predicts 95th percentile
 
-    This approach is MUCH better than residual-based CIs because:
-    1. Quantiles are predicted directly in log space
-    2. When transformed to real space with expm1(), ordering is preserved
-    3. Much better real-space performance
-    4. No need for bucketing or extrapolation handling
+    KEY FEATURE: Supports price_per_sqm target with price reconstruction.
+    - If use_price_per_sqm=True and actual_areas provided: Reconstruct price = price_per_sqm × area
+    - Otherwise: Direct price prediction
 
     Args:
         models: Dictionary with 'lower', 'median', 'upper' quantile models
         X: Features for prediction
+        actual_areas: ACTUAL_AREA values for price reconstruction (if using price_per_sqm)
+        use_price_per_sqm: If True, reconstruct price from price_per_sqm
 
     Returns:
-        predictions, lower_bounds, upper_bounds, confidence_flags
+        predictions, lower_bounds, upper_bounds, confidence_flags (all in price space)
     """
     # Predict with all three models in log-space
     y_pred_log_lower = models['lower'].predict(X)
     y_pred_log_median = models['median'].predict(X)
     y_pred_log_upper = models['upper'].predict(X)
 
-    # Transform to real space
-    lower_bounds = np.expm1(y_pred_log_lower)
-    predictions = np.expm1(y_pred_log_median)
-    upper_bounds = np.expm1(y_pred_log_upper)
+    # Transform to real space (price_per_sqm or price)
+    lower_bounds_ppsm = np.expm1(y_pred_log_lower)
+    predictions_ppsm = np.expm1(y_pred_log_median)
+    upper_bounds_ppsm = np.expm1(y_pred_log_upper)
+
+    # Reconstruct prices if using price_per_sqm target
+    if use_price_per_sqm and actual_areas is not None:
+        lower_bounds = lower_bounds_ppsm * actual_areas
+        predictions = predictions_ppsm * actual_areas
+        upper_bounds = upper_bounds_ppsm * actual_areas
+    else:
+        lower_bounds = lower_bounds_ppsm
+        predictions = predictions_ppsm
+        upper_bounds = upper_bounds_ppsm
 
     # Compute confidence interval width as percentage of prediction
     ci_width_pct = ((upper_bounds - lower_bounds) / predictions) * 100

@@ -254,11 +254,15 @@ async def predict_price(request: PredictionRequest):
         # Make prediction with confidence interval using quantile models
         # Handle both v1.0 (single model) and v2.0 (quantile models)
         if 'models' in artifact:
-            # v2.0: Use quantile regression models
+            # v2.0: Use quantile regression models with price_per_sqm reconstruction
             models = artifact['models']
+            # Get actual area for price reconstruction
+            actual_area_array = np.array([request.actual_area])
             predictions, lower_bounds, upper_bounds, confidence_flags = predict_with_confidence(
                 models=models,
-                X=X
+                X=X,
+                actual_areas=actual_area_array,
+                use_price_per_sqm=True
             )
         else:
             # v1.0 backward compatibility: Use single model + CI stats

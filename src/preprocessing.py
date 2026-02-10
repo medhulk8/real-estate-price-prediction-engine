@@ -382,31 +382,52 @@ def prepare_features_and_target(
     df: pd.DataFrame,
     target_col: str = 'TRANS_VALUE',
     log_transform_target: bool = True,
-    drop_cols: List[str] = None
+    drop_cols: List[str] = None,
+    use_price_per_sqm: bool = True
 ) -> Tuple[pd.DataFrame, pd.Series]:
     """
     Prepare final feature matrix and target vector.
 
-    - Drop identifier columns and target
-    - Apply log1p transform to target (if enabled)
-    - Return X (features) and y (target)
+    KEY IMPROVEMENT: Predicts price_per_sqm instead of absolute price to reduce variance.
+
+    Why price_per_sqm works better:
+    - Removes size-driven variance (properties from $200k to $4.6M)
+    - Model learns value density (location + quality), not size scaling
+    - Final price reconstructed as: predicted_price_per_sqm × actual_area
+    - Common approach in real estate modeling
 
     Args:
         df: Input DataFrame with all features
-        target_col: Name of target column
+        target_col: Name of target column (default: 'TRANS_VALUE')
         log_transform_target: Whether to apply log1p to target
-        drop_cols: Additional columns to drop (default: ['TRANSACTION_NUMBER', 'INSTANCE_DATE'])
+        drop_cols: Additional columns to drop
+        use_price_per_sqm: If True, target is price_per_sqm (default: True)
 
     Returns:
-        X (features), y (target)
+        X (features), y (target - either price or price_per_sqm in log space)
     """
     if drop_cols is None:
         drop_cols = ['TRANSACTION_NUMBER', 'INSTANCE_DATE']
 
     df = df.copy()
 
+    # Filter out rows with invalid area (required for price_per_sqm)
+    if use_price_per_sqm:
+        initial_len = len(df)
+        df = df[df['ACTUAL_AREA'] > 0].copy()
+        removed = initial_len - len(df)
+        if removed > 0:
+            print(f"  Removed {removed} rows with ACTUAL_AREA <= 0 ({removed/initial_len*100:.2f}%)")
+
     # Extract target
-    y = df[target_col].copy()
+    if use_price_per_sqm:
+        # Create price per square meter/foot target
+        y = (df[target_col] / df['ACTUAL_AREA']).copy()
+        print(f"  Using price_per_sqm target (value density approach)")
+    else:
+        y = df[target_col].copy()
+        print(f"  Using absolute price target (traditional approach)")
+
     if log_transform_target:
         y = np.log1p(y)
 
@@ -592,9 +613,15 @@ def run_full_preprocessing_pipeline(
 
     # Step 9: Prepare final feature matrices
     print("\n[9/9] Preparing final feature matrices...")
-    X_train, y_train = prepare_features_and_target(train_df, log_transform_target=True)
-    X_val, y_val = prepare_features_and_target(val_df, log_transform_target=True)
-    X_test, y_test = prepare_features_and_target(test_df, log_transform_target=True)
+
+    # Save actual areas BEFORE prepare_features_and_target (for price reconstruction)
+    train_areas = train_df['ACTUAL_AREA'].values
+    val_areas = val_df['ACTUAL_AREA'].values
+    test_areas = test_df['ACTUAL_AREA'].values
+
+    X_train, y_train = prepare_features_and_target(train_df, log_transform_target=True, use_price_per_sqm=True)
+    X_val, y_val = prepare_features_and_target(val_df, log_transform_target=True, use_price_per_sqm=True)
+    X_test, y_test = prepare_features_and_target(test_df, log_transform_target=True, use_price_per_sqm=True)
 
     # Get categorical indices for CatBoost
     categorical_indices = get_categorical_feature_indices(X_train)
@@ -626,6 +653,9 @@ def run_full_preprocessing_pipeline(
         'y_val': y_val,
         'X_test': X_test,
         'y_test': y_test,
+        'train_areas': train_areas,
+        'val_areas': val_areas,
+        'test_areas': test_areas,
         'preprocessing_metadata': preprocessing_metadata,
         'categorical_indices': categorical_indices
     }
